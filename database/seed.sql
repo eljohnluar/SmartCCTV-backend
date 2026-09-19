@@ -26,13 +26,11 @@ SET full_name = EXCLUDED.full_name,
 WITH attendance_seed (student_code, status, check_in_time, confidence) AS (
     VALUES
         ('STU-001', 'present', CURRENT_DATE + TIME '07:45:00', 0.97::FLOAT),
-        ('STU-002', 'late',    CURRENT_DATE + TIME '08:15:00', 0.91::FLOAT),
-        ('STU-003', 'absent',  NULL::TIMESTAMPTZ,               NULL::FLOAT),
+        ('STU-002', 'late',    CURRENT_DATE + TIME '08:31:00', 0.91::FLOAT),
         ('STU-004', 'present', CURRENT_DATE + TIME '07:50:00', 0.88::FLOAT),
-        ('STU-005', 'absent',  NULL::TIMESTAMPTZ,               NULL::FLOAT),
         ('STU-006', 'present', CURRENT_DATE + TIME '07:55:00', 0.95::FLOAT),
         ('STU-007', 'present', CURRENT_DATE + TIME '07:40:00', 0.93::FLOAT),
-        ('STU-008', 'late',    CURRENT_DATE + TIME '08:10:00', 0.84::FLOAT)
+        ('STU-008', 'late',    CURRENT_DATE + TIME '08:45:00', 0.84::FLOAT)
 )
 INSERT INTO attendance (student_id, class_date, status, check_in_time, confidence)
 SELECT s.id, CURRENT_DATE, a.status, a.check_in_time, a.confidence

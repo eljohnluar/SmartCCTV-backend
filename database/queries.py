@@ -1,9 +1,10 @@
 import ast
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from database.supabase_client import get_supabase
 from utils.logger import logger
+from utils.uniform_policy import determine_checkin_status, get_gesture_enrolled_students
 
 
 class DatabaseUnavailableError(RuntimeError):
@@ -47,7 +48,11 @@ def get_all_students(section: Optional[str] = None) -> List[Dict[str, Any]]:
         query = _client().table("students").select("*")
         if section:
             query = query.eq("section", section)
-        return query.order("full_name").execute().data
+        enrolled_by_gesture = get_gesture_enrolled_students()
+        return [
+            {**student, "gesture_enrolled": enrolled_by_gesture.get(str(student.get("id")), False)}
+            for student in query.order("full_name").execute().data
+        ]
     except DatabaseUnavailableError:
         raise
     except Exception as error:
@@ -117,6 +122,7 @@ def replace_face_embeddings(student_id: int, embeddings: List[List[float]]) -> L
 def get_face_embeddings() -> List[Dict[str, Any]]:
     """Load enrolled vectors and their student identity data for live matching."""
     try:
+        gesture_enrolled_students = get_gesture_enrolled_students()
         result = (
             _client()
             .table("face_embeddings")
@@ -132,6 +138,7 @@ def get_face_embeddings() -> List[Dict[str, Any]]:
                     "student_id": row.get("student_id"),
                     "student_name": student.get("full_name", "Unknown"),
                     "student_code": student.get("student_id", ""),
+                    "gesture_enrolled": gesture_enrolled_students.get(str(row.get("student_id")), False),
                     "embedding": vector,
                 })
         return embeddings
@@ -188,12 +195,23 @@ def get_attendance_in_range(date_from: str, date_to: str, section: Optional[str]
         raise _database_error("attendance report query", error) from error
 
 
-def mark_attendance(student_id: int, status: str = "present", confidence: Optional[float] = None) -> Dict[str, Any]:
+def mark_attendance(
+    student_id: int,
+    confidence: Optional[float] = None,
+    check_in_time: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Store a check-in and calculate present/late from its timestamp."""
     try:
+        checked_in_at = check_in_time or datetime.now().astimezone()
+        # Schedules use the backend's local wall-clock time, while stored
+        # timestamps are UTC. Normalize first so the correct local date and
+        # status are derived even when callers submit an ISO UTC timestamp.
+        checked_in_at = checked_in_at.astimezone()
+        status = determine_checkin_status(checked_in_at)
         data = {
             "student_id": student_id,
-            "class_date": date.today().isoformat(),
-            "check_in_time": datetime.utcnow().isoformat() + "Z",
+            "class_date": checked_in_at.date().isoformat(),
+            "check_in_time": checked_in_at.astimezone(timezone.utc).isoformat(),
             "status": status,
             "confidence": confidence,
         }
@@ -205,6 +223,17 @@ def mark_attendance(student_id: int, status: str = "present", confidence: Option
         raise
     except Exception as error:
         raise _database_error("attendance update", error) from error
+
+
+def reset_attendance_for_date(target_date: Optional[str] = None) -> int:
+    today_str = target_date or date.today().isoformat()
+    try:
+        result = _client().table("attendance").delete().eq("class_date", today_str).execute()
+        return len(result.data or [])
+    except DatabaseUnavailableError:
+        raise
+    except Exception as error:
+        raise _database_error("attendance reset", error) from error
 
 
 def get_alerts_list(is_resolved: Optional[bool] = None, limit: int = 20) -> List[Dict[str, Any]]:
@@ -224,6 +253,7 @@ def create_alert_record(
     description: str,
     student_id: Optional[int] = None,
     image_url: Optional[str] = None,
+    severity: str = "medium",
 ) -> Dict[str, Any]:
     try:
         data = {
@@ -231,6 +261,7 @@ def create_alert_record(
             "description": description,
             "student_id": student_id,
             "image_url": image_url,
+            "severity": severity,
             "is_resolved": False,
         }
         result = _client().table("alerts").insert(data).execute()
@@ -251,3 +282,13 @@ def update_alert_record(alert_id: int, updates: Dict[str, Any]) -> Optional[Dict
         raise
     except Exception as error:
         raise _database_error("alert update", error) from error
+
+
+def reset_all_alerts() -> int:
+    try:
+        result = _client().table("alerts").delete().neq("id", 0).execute()
+        return len(result.data or [])
+    except DatabaseUnavailableError:
+        raise
+    except Exception as error:
+        raise _database_error("alerts reset", error) from error

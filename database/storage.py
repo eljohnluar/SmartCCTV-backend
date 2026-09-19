@@ -37,3 +37,12 @@ def delete_face_image(path: Optional[str]) -> None:
         client.storage.from_(settings.FACE_STORAGE_BUCKET).remove([path])
     except Exception as error:
         logger.warning("Could not clean up face image %s: %s", path, error)
+
+
+def download_face_image(path: str) -> bytes:
+    """Read an enrolled face image from the private storage bucket."""
+    client = get_supabase()
+    if client is None:
+        raise RuntimeError("Supabase is not configured; face images cannot be retrieved.")
+    result = client.storage.from_(settings.FACE_STORAGE_BUCKET).download(path)
+    return result if isinstance(result, bytes) else result.content

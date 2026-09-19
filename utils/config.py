@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     # Security / YOLO
     WEAPON_DETECTION_ENABLED: bool = Field(default=True, env="WEAPON_DETECTION_ENABLED")
     YOLO_MODEL_PATH: str = Field(default="yolov8n.pt", env="YOLO_MODEL_PATH")
+    WEAPON_CONFIDENCE_THRESHOLD: float = Field(default=0.35, env="WEAPON_CONFIDENCE_THRESHOLD")
+    DISPLAY_EXAMPLE_THREATS: bool = Field(default=False, env="DISPLAY_EXAMPLE_THREATS")
 
     # General
     ENVIRONMENT: str = Field(default="development", env="ENVIRONMENT")

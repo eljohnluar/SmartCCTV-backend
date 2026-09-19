@@ -1,0 +1,1 @@
+{"uniform_colors": ["white", "blue", "light-blue", "dark-blue"], "voice_gender": "female", "checkin_time": "20:00", "late_grace_minutes": 20, "gesture_attendance_enabled": true, "camera_flip_horizontal": true, "announcer_enabled": true, "announcer_volume": 100, "alert_mode_enabled": true}

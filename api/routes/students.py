@@ -1,4 +1,5 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi.responses import Response
 from typing import List, Optional
 from api.models.student import StudentCreate, StudentUpdate, StudentResponse
 from database.queries import (
@@ -10,8 +11,11 @@ from database.queries import (
 )
 from ai_engine.face_recognition.detector import face_detector
 from ai_engine.face_recognition.recognizer import face_recognizer
-from database.storage import delete_face_image, upload_face_image
+from ai_engine.face_recognition.live_matcher import live_face_matcher
+from database.storage import delete_face_image, download_face_image, upload_face_image
 from utils.logger import logger
+from utils.uniform_policy import get_gesture_attendance_settings, save_student_gesture_enrollment
+from ai_engine.gesture_detection import gesture_detector
 
 router = APIRouter(prefix="/students", tags=["Students"])
 
@@ -35,6 +39,24 @@ def get_student(student_id: int):
     if not match:
         raise HTTPException(status_code=404, detail="Student not found")
     return match
+
+
+@router.get("/{student_id}/enrollment-photo")
+def get_front_enrollment_photo(student_id: int):
+    """Serve only the front enrollment capture for the attendance confirmation."""
+    student = next((item for item in get_all_students() if item["id"] == student_id), None)
+    expected_path = f"students/{student_id}/enrollment-front.jpg"
+    if not student or student.get("face_storage_path") != expected_path:
+        raise HTTPException(status_code=404, detail="A front enrollment photo is not available for this student.")
+    try:
+        return Response(
+            content=download_face_image(expected_path),
+            media_type="image/jpeg",
+            headers={"Cache-Control": "private, max-age=60"},
+        )
+    except Exception as error:
+        logger.warning("Could not retrieve front enrollment photo for student %s: %s", student_id, error)
+        raise HTTPException(status_code=404, detail="The front enrollment photo could not be retrieved.") from error
 
 @router.put("/{student_id}", response_model=StudentResponse)
 def update_student(student_id: int, updates: StudentUpdate):
@@ -73,11 +95,17 @@ async def enroll_face(
 
         embeddings = []
         stored_paths = []
+        require_hand_gesture = get_gesture_attendance_settings()["gesture_attendance_enabled"]
         for angle, image in zip(required_angles, images):
             content = await image.read()
             frame = cv2.imdecode(np.frombuffer(content, dtype=np.uint8), cv2.IMREAD_COLOR)
             if frame is None:
                 raise HTTPException(status_code=400, detail=f"The {angle} image could not be decoded.")
+            if require_hand_gesture and not gesture_detector.is_open_palm(frame):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Show an open palm with your face before capturing the {angle} enrollment photo.",
+                )
 
             faces = face_detector.detect_faces(frame)
             if not faces:
@@ -108,7 +136,12 @@ async def enroll_face(
 
         try:
             replace_face_embeddings(student_id, embeddings)
-            update_student_record(student_id, {"has_face": True, "face_storage_path": stored_paths[0]})
+            update_student_record(student_id, {
+                "has_face": True,
+                "face_storage_path": stored_paths[0],
+            })
+            save_student_gesture_enrollment(student_id, require_hand_gesture)
+            live_face_matcher.refresh_embeddings()
         except Exception:
             for path in stored_paths:
                 delete_face_image(path)
@@ -119,6 +152,7 @@ async def enroll_face(
             "message": f"Four facial embeddings generated and registered for student {student_id}",
             "student_id": student_id,
             "has_face": True,
+            "gesture_enrolled": require_hand_gesture,
             "face_storage_path": stored_paths[0],
             "samples": len(embeddings),
         }

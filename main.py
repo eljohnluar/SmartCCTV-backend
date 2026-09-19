@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from utils.config import settings
 from utils.logger import logger
 from api.middleware.cors import setup_cors
-from api.routes import students, attendance, reports, alerts, auth, camera
+from api.routes import students, attendance, reports, alerts, auth, camera, settings as policy_settings
 from api.models.response import SystemStatusResponse
 from ai_engine.camera.rtsp_client import camera_stream
 from ai_engine.face_recognition.recognizer import face_recognizer
@@ -50,6 +50,7 @@ app.include_router(reports.router, prefix="/api")
 app.include_router(alerts.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(camera.router, prefix="/api")
+app.include_router(policy_settings.router, prefix="/api")
 
 # System Status Endpoint
 @app.get("/api/system/status", response_model=SystemStatusResponse)

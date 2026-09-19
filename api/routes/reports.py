@@ -37,7 +37,6 @@ def get_summary(
     start, end, records = _records_for_range(date_from, date_to, section)
     total_students = len(get_all_students(section or None))
     present = sum(record["status"] == "present" for record in records)
-    absent = sum(record["status"] == "absent" for record in records)
     late = sum(record["status"] == "late" for record in records)
 
     daily_rates = []
@@ -51,7 +50,6 @@ def get_summary(
     return {
         "avg_rate": round(sum(daily_rates) / len(daily_rates), 1) if daily_rates else 0,
         "total_present": present,
-        "total_absent": absent,
         "total_late": late,
         "total_students": total_students,
         "date_from": start.isoformat(),

@@ -1,4 +1,5 @@
 from pathlib import Path
+import threading
 from typing import Optional, Dict, Any, List
 import numpy as np
 from utils.config import settings
@@ -13,6 +14,10 @@ class FaceRecognizer:
         self.model_name = settings.RECOGNITION_MODEL
         self.threshold = settings.RECOGNITION_THRESHOLD
         self.sface = None
+        # OpenCV's DNN Net keeps mutable input/output buffers. The live camera
+        # and enrollment API can run simultaneously, so inference must be
+        # serialized to prevent the buffer-shape assertion seen in OpenCV 5.
+        self._sface_lock = threading.Lock()
         self.backend_name = "unavailable"
         try:
             import importlib.util
@@ -40,7 +45,8 @@ class FaceRecognizer:
         try:
             import cv2
             aligned_face = cv2.resize(face_image, (112, 112), interpolation=cv2.INTER_AREA)
-            feature = self.sface.feature(aligned_face)
+            with self._sface_lock:
+                feature = self.sface.feature(aligned_face)
             vector = np.asarray(feature, dtype=np.float32).reshape(-1)
             norm = np.linalg.norm(vector)
             return (vector / norm).astype(float).tolist() if norm else None

@@ -161,15 +161,32 @@ class FaceDetector:
                 if right <= x or bottom <= y:
                     continue
 
-                cv2.rectangle(annotated, (x, y), (right, bottom), (26, 218, 145), 2, cv2.LINE_AA)
-                label = labels[index] if labels and index < len(labels) else "FACE"
+                label = labels[index] if labels and index < len(labels) else "UNKNOWN"
+                is_enrolled = (
+                    bool(label)
+                    and label.upper() not in ("UNKNOWN", "NOT ENROLLED", "TRESPASSER", "FACE", "UNREGISTERED")
+                    and not label.upper().startswith("UNKNOWN")
+                    and not label.upper().startswith("NOT ENROLLED")
+                    and not label.upper().startswith("TRESPASSER")
+                )
+
+                if is_enrolled:
+                    # Enrolled student: Emerald Green
+                    box_color = (26, 218, 145)  # BGR
+                    text_color = (6, 40, 24)     # Dark green text
+                else:
+                    # Unknown or not enrolled: Red (#ef4444 in BGR)
+                    box_color = (68, 68, 239)    # BGR Red
+                    text_color = (255, 255, 255) # White text
+
+                cv2.rectangle(annotated, (x, y), (right, bottom), box_color, 2, cv2.LINE_AA)
                 (label_width, label_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)
                 label_top = max(0, y - label_height - baseline - 8)
                 cv2.rectangle(
                     annotated,
                     (x, label_top),
                     (x + label_width + 12, y),
-                    (26, 218, 145),
+                    box_color,
                     thickness=-1,
                 )
                 cv2.putText(
@@ -178,7 +195,7 @@ class FaceDetector:
                     (x + 6, y - baseline - 4),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.48,
-                    (6, 40, 24),
+                    text_color,
                     1,
                     cv2.LINE_AA,
                 )

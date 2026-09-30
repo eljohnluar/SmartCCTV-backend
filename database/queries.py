@@ -292,3 +292,107 @@ def reset_all_alerts() -> int:
         raise
     except Exception as error:
         raise _database_error("alerts reset", error) from error
+
+
+# ── Accounts (teachers / administrators) ─────────────────────────────────────
+
+PUBLIC_USER_FIELDS = "id, username, email, full_name, role, is_active, year_levels, sections, last_login_at, created_at, updated_at"
+
+
+def list_user_accounts(role: Optional[str] = None) -> List[Dict[str, Any]]:
+    try:
+        query = _client().table("users").select(PUBLIC_USER_FIELDS)
+        if role:
+            query = query.eq("role", role)
+        return query.order("full_name").execute().data
+    except DatabaseUnavailableError:
+        raise
+    except Exception as error:
+        raise _database_error("accounts query", error) from error
+
+
+def find_account(identifier: str) -> Optional[Dict[str, Any]]:
+    """Look up a login row by username or email, returning every column."""
+    try:
+        result = (
+            _client()
+            .table("users")
+            .select("*")
+            .or_(f"username.eq.{identifier},email.eq.{identifier}")
+            .execute()
+        )
+        return result.data[0] if result.data else None
+    except DatabaseUnavailableError:
+        raise
+    except Exception as error:
+        raise _database_error("account lookup", error) from error
+
+
+def create_account_record(data: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        result = _client().table("users").insert(data).execute()
+        if not result.data:
+            raise DatabaseUnavailableError("Database did not return the created account.")
+        return {key: value for key, value in result.data[0].items() if key != "password_hash"}
+    except DatabaseUnavailableError:
+        raise
+    except Exception as error:
+        raise _database_error("account insert", error) from error
+
+
+def update_account_record(user_id: int, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    try:
+        result = _client().table("users").update(data).eq("id", user_id).execute()
+        if not result.data:
+            return None
+        return {key: value for key, value in result.data[0].items() if key != "password_hash"}
+    except DatabaseUnavailableError:
+        raise
+    except Exception as error:
+        raise _database_error("account update", error) from error
+
+
+def delete_account_record(user_id: int) -> bool:
+    try:
+        result = _client().table("users").delete().eq("id", user_id).execute()
+        return bool(result.data)
+    except DatabaseUnavailableError:
+        raise
+    except Exception as error:
+        raise _database_error("account deletion", error) from error
+
+
+# ── Audit trail ──────────────────────────────────────────────────────────────
+
+def insert_audit_event(event: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        result = _client().table("audit_log").insert(event).execute()
+        if not result.data:
+            raise DatabaseUnavailableError("Database did not return the audit event.")
+        return result.data[0]
+    except DatabaseUnavailableError:
+        raise
+    except Exception as error:
+        raise _database_error("audit event insert", error) from error
+
+
+def list_audit_events(
+    limit: int = 100,
+    action: Optional[str] = None,
+    search: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    try:
+        query = _client().table("audit_log").select("*").order("created_at", desc=True).limit(limit)
+        if action:
+            query = query.eq("action", action)
+        if search:
+            pattern = search.replace(",", " ")
+            query = query.or_(
+                f"action.ilike.%{pattern}%,actor_username.ilike.%{pattern}%,"
+                f"target.ilike.%{pattern}%,description.ilike.%{pattern}%"
+            )
+        return query.execute().data
+    except DatabaseUnavailableError:
+        raise
+    except Exception as error:
+        raise _database_error("audit log query", error) from error

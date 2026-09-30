@@ -70,7 +70,7 @@ class WeaponDetector:
     Object detection engine using Ultralytics YOLO to scan video frames
     for weapons and hazardous objects.
     """
-    SCAN_INTERVAL = 0.33   # ~3 scans per second for faster threat detection
+    SCAN_INTERVAL = settings.THREAT_SCAN_INTERVAL   # Seconds between shared scans
     ALERT_COOLDOWN = 20.0  # Seconds between repeated alerts for the same threat class
 
     def __init__(self):
@@ -78,6 +78,7 @@ class WeaponDetector:
         self.enabled = settings.WEAPON_DETECTION_ENABLED
         self.confidence_threshold = getattr(settings, "WEAPON_CONFIDENCE_THRESHOLD", 0.35)
         self.display_example_threats = getattr(settings, "DISPLAY_EXAMPLE_THREATS", False)
+        self.input_size = settings.YOLO_INPUT_SIZE
 
         self._scan_lock = threading.Lock()
         self._last_scan_at = 0.0
@@ -92,7 +93,13 @@ class WeaponDetector:
 
     def _load_model(self):
         try:
+            import torch
             from ultralytics import YOLO
+            # YOLO defaults to every core, which starves the video path on a
+            # single-machine deployment. Fewer threads plus a smaller input is
+            # both faster per scan and leaves cores for streaming.
+            if settings.TORCH_NUM_THREADS > 0:
+                torch.set_num_threads(settings.TORCH_NUM_THREADS)
             self.model = YOLO(settings.YOLO_MODEL_PATH)
             logger.info("YOLO object detection model loaded successfully from %s.", settings.YOLO_MODEL_PATH)
         except Exception as e:
@@ -106,7 +113,7 @@ class WeaponDetector:
             return []
 
         try:
-            results = self.model(frame, verbose=False)
+            results = self.model(frame, verbose=False, imgsz=self.input_size)
             threats = []
             for r in results:
                 for box in r.boxes:

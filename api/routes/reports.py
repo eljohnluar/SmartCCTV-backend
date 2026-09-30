@@ -4,9 +4,11 @@ from collections import defaultdict
 from datetime import date, timedelta
 from typing import Optional, Tuple
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
+from api.middleware.auth import get_optional_account
 from database.queries import get_all_students, get_attendance_in_range
+from utils.sections import resolve_allowed_sections
 
 router = APIRouter(prefix="/reports", tags=["Reports"])
 
@@ -22,9 +24,26 @@ def _parse_date_range(date_from: Optional[str], date_to: Optional[str]) -> Tuple
     return start, end
 
 
-def _records_for_range(date_from: Optional[str], date_to: Optional[str], section: Optional[str]):
+def _visible_students(claims: Optional[dict], section: Optional[str]):
+    students = get_all_students(section or None)
+    allowed = resolve_allowed_sections(claims)
+    if allowed:
+        students = [student for student in students if student.get("section") in allowed]
+    return students
+
+
+def _records_for_range(
+    date_from: Optional[str],
+    date_to: Optional[str],
+    section: Optional[str],
+    claims: Optional[dict] = None,
+):
     start, end = _parse_date_range(date_from, date_to)
-    return start, end, get_attendance_in_range(start.isoformat(), end.isoformat(), section or None)
+    records = get_attendance_in_range(start.isoformat(), end.isoformat(), section or None)
+    allowed = resolve_allowed_sections(claims)
+    if allowed:
+        records = [record for record in records if record.get("section") in allowed]
+    return start, end, records
 
 
 @router.get("/summary")
@@ -32,10 +51,11 @@ def get_summary(
     date_from: Optional[str] = Query(None, alias="dateFrom"),
     date_to: Optional[str] = Query(None, alias="dateTo"),
     section: Optional[str] = None,
+    claims: Optional[dict] = Depends(get_optional_account),
 ):
     """Get attendance metrics calculated from database records."""
-    start, end, records = _records_for_range(date_from, date_to, section)
-    total_students = len(get_all_students(section or None))
+    start, end, records = _records_for_range(date_from, date_to, section, claims)
+    total_students = len(_visible_students(claims, section))
     present = sum(record["status"] == "present" for record in records)
     late = sum(record["status"] == "late" for record in records)
 
@@ -63,10 +83,11 @@ def get_trend(
     date_from: Optional[str] = Query(None, alias="dateFrom"),
     date_to: Optional[str] = Query(None, alias="dateTo"),
     section: Optional[str] = None,
+    claims: Optional[dict] = Depends(get_optional_account),
 ):
     """Get daily attendance-rate data calculated from the database."""
-    start, end, records = _records_for_range(date_from, date_to, section)
-    total_students = len(get_all_students(section or None))
+    start, end, records = _records_for_range(date_from, date_to, section, claims)
+    total_students = len(_visible_students(claims, section))
     records_by_date = defaultdict(list)
     for record in records:
         records_by_date[record["class_date"]].append(record)
@@ -87,9 +108,10 @@ def get_records(
     date_from: Optional[str] = Query(None, alias="dateFrom"),
     date_to: Optional[str] = Query(None, alias="dateTo"),
     section: Optional[str] = None,
+    claims: Optional[dict] = Depends(get_optional_account),
 ):
     """Return detailed attendance rows for the selected report range."""
-    _, _, records = _records_for_range(date_from, date_to, section)
+    _, _, records = _records_for_range(date_from, date_to, section, claims)
     return records
 
 
@@ -98,9 +120,10 @@ def export_csv(
     date_from: Optional[str] = Query(None, alias="dateFrom"),
     date_to: Optional[str] = Query(None, alias="dateTo"),
     section: Optional[str] = None,
+    claims: Optional[dict] = Depends(get_optional_account),
 ):
     """Export attendance rows from the database as CSV."""
-    start, end, records = _records_for_range(date_from, date_to, section)
+    start, end, records = _records_for_range(date_from, date_to, section, claims)
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["Date", "Student ID", "Student Name", "Section", "Status", "Check-in Time", "Confidence"])

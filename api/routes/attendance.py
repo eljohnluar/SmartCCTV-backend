@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Optional
 from datetime import date
+from api.middleware.auth import get_optional_account
 from api.models.attendance import (
     AttendanceManualMark,
     AttendanceRecord,
@@ -16,8 +17,20 @@ from database.queries import (
 from ai_engine.face_recognition.live_matcher import live_face_matcher
 from websocket_manager import publish_from_worker
 from utils.logger import logger
+from utils.sections import resolve_allowed_sections
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
+
+
+def _scope_to_account(records: List[dict], students: List[dict], claims: Optional[dict]):
+    """Keep only the rows belonging to sections the signed-in teacher handles."""
+    allowed = resolve_allowed_sections(claims)
+    if not allowed:
+        return records, students
+    return (
+        [record for record in records if record.get("section") in allowed],
+        [student for student in students if student.get("section") in allowed],
+    )
 
 def calculate_stats(records: List[dict], total_enrolled: int) -> AttendanceStats:
     total = len(records)
@@ -33,11 +46,10 @@ def calculate_stats(records: List[dict], total_enrolled: int) -> AttendanceStats
     )
 
 @router.get("/today", response_model=TodayAttendanceResponse)
-def get_today_attendance():
+def get_today_attendance(claims: Optional[dict] = Depends(get_optional_account)):
     """Fetch attendance records and live summary metrics for today"""
     today_str = date.today().isoformat()
-    records = get_attendance_for_date(today_str)
-    all_students = get_all_students()
+    records, all_students = _scope_to_account(get_attendance_for_date(today_str), get_all_students(), claims)
     stats = calculate_stats(records, len(all_students))
     return TodayAttendanceResponse(
         date=today_str,
@@ -46,10 +58,9 @@ def get_today_attendance():
     )
 
 @router.get("/date/{query_date}", response_model=TodayAttendanceResponse)
-def get_attendance_by_date(query_date: str):
+def get_attendance_by_date(query_date: str, claims: Optional[dict] = Depends(get_optional_account)):
     """Fetch attendance records for a specific historical date (YYYY-MM-DD)"""
-    records = get_attendance_for_date(query_date)
-    all_students = get_all_students()
+    records, all_students = _scope_to_account(get_attendance_for_date(query_date), get_all_students(), claims)
     stats = calculate_stats(records, len(all_students))
     return TodayAttendanceResponse(
         date=query_date,

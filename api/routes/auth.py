@@ -1,53 +1,68 @@
-import hashlib
 import time
 from typing import Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+from api.middleware.auth import get_current_user
 from database.supabase_client import get_supabase
+from utils.audit import record_audit
+from utils.config import settings
+from utils.demo_accounts import (
+    DEMO_PASSWORDS,
+    create_fallback,
+    find_fallback,
+    hash_password,
+)
 from utils.logger import logger
+from utils.tokens import create_token
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
-# Mandatory teacher registration code
-HARDCODED_TEACHER_CODE = "TEACHER2026"
-SALT = "smartcctv_salt_"
-
-# Local in-memory / fallback store if Supabase `users` table hasn't been migrated yet
-_FALLBACK_USERS = {
-    "teacher": {
-        "id": 1,
-        "username": "teacher",
-        "email": "teacher@smartcctv.edu",
-        "password_hash": hashlib.sha256(f"{SALT}password123".encode()).hexdigest(),
-        "full_name": "Faculty Instructor",
-        "role": "teacher",
-        "registration_code": HARDCODED_TEACHER_CODE,
-    }
-}
-
-def hash_password(password: str) -> str:
-    return hashlib.sha256(f"{SALT}{password}".encode()).hexdigest()
-
 class LoginRequest(BaseModel):
-    username: str = Field(..., description="Teacher username or email")
-    password: str = Field(..., description="Teacher password")
+    username: str = Field(..., description="Account username or email")
+    password: str = Field(..., description="Account password")
 
 class RegisterRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
     password: str = Field(..., min_length=4)
     full_name: Optional[str] = None
-    registration_code: str = Field(..., description="Must be TEACHER2026")
+    registration_code: str = Field(..., description="Administrator clearance code")
     email: Optional[str] = None
 
+def _public_user(row: dict) -> dict:
+    return {
+        "id": row.get("id"),
+        "username": row.get("username"),
+        "full_name": row.get("full_name") or str(row.get("username", "")).title(),
+        "role": row.get("role", "teacher"),
+        "email": row.get("email", ""),
+        # Lets the teacher console limit section choices without a second request
+        "year_levels": row.get("year_levels") or [],
+        "sections": row.get("sections") or [],
+    }
+
+
+def _store_fallback(record: dict) -> int:
+    try:
+        return create_fallback(record)["id"]
+    except ValueError as conflict:
+        raise HTTPException(status_code=409, detail=str(conflict))
+
 @router.post("/register")
-def register(data: RegisterRequest):
-    """Register a new Teacher account. Clearance code TEACHER2026 is required."""
-    code = (data.registration_code or "").strip()
-    if code.upper() != HARDCODED_TEACHER_CODE:
-        logger.warning("Registration denied: Invalid registration code '%s' for user '%s'", code, data.username)
+def register(data: RegisterRequest, request: Request):
+    """Register a new Administrator account. Teacher accounts are provisioned by an administrator."""
+    code = (data.registration_code or "").strip().upper()
+    if code != settings.ADMIN_REGISTRATION_CODE.upper():
+        logger.warning("Registration denied: invalid clearance code for user '%s'", data.username)
+        record_audit(
+            "registration_denied",
+            f"Registration for '{data.username}' was rejected by the clearance check.",
+            target=data.username,
+            request=request,
+            severity="warning",
+        )
         raise HTTPException(
             status_code=403,
-            detail=f"Access Denied: Invalid registration code. Institutional clearance '{HARDCODED_TEACHER_CODE}' is required to register."
+            detail="Access Denied: an administrator clearance code is required to register.",
         )
 
     clean_username = data.username.strip().lower()
@@ -58,78 +73,61 @@ def register(data: RegisterRequest):
     password_hash = hash_password(data.password)
     full_name = (data.full_name or clean_username).strip()
     email = (data.email or f"{clean_username}@school.internal").strip().lower()
-    role = "teacher"  # Strictly teacher role
+    role = "admin"
 
-    # Check database if available
+    new_record = {
+        "username": clean_username,
+        "email": email,
+        "password_hash": password_hash,
+        "full_name": full_name,
+        "role": role,
+        "registration_code": settings.ADMIN_REGISTRATION_CODE,
+        "is_active": True,
+    }
+
     if client:
         try:
-            # Check existing username
             existing = client.table("users").select("id, username").eq("username", clean_username).execute()
             if existing.data and len(existing.data) > 0:
                 raise HTTPException(status_code=409, detail=f"Username '{clean_username}' is already registered.")
 
-            # Insert new user record
-            new_record = {
-                "username": clean_username,
-                "email": email,
-                "password_hash": password_hash,
-                "full_name": full_name,
-                "role": role,
-                "registration_code": HARDCODED_TEACHER_CODE,
-                "is_active": True,
-            }
             res = client.table("users").insert(new_record).execute()
             user_data = res.data[0] if res.data else new_record
             user_id = user_data.get("id", int(time.time()))
         except HTTPException:
             raise
         except Exception as err:
+            failure = str(err).lower()
+            if "users_role_check" in failure or ("role" in failure and "constraint" in failure):
+                raise HTTPException(
+                    status_code=422,
+                    detail="The users table still restricts roles to 'teacher'. Run backend/database/admin_schema.sql in the Supabase SQL Editor, then try again.",
+                )
             logger.warning("Supabase users table insert failed (%s). Using fallback persistence.", err)
-            # Fallback to local memory dictionary if users table not yet run in Supabase
-            if clean_username in _FALLBACK_USERS:
-                raise HTTPException(status_code=409, detail=f"Username '{clean_username}' is already registered.")
-            user_id = len(_FALLBACK_USERS) + 1
-            _FALLBACK_USERS[clean_username] = {
-                "id": user_id,
-                "username": clean_username,
-                "email": email,
-                "password_hash": password_hash,
-                "full_name": full_name,
-                "role": role,
-                "registration_code": HARDCODED_TEACHER_CODE,
-            }
+            user_id = _store_fallback(new_record)
     else:
-        if clean_username in _FALLBACK_USERS:
-            raise HTTPException(status_code=409, detail=f"Username '{clean_username}' is already registered.")
-        user_id = len(_FALLBACK_USERS) + 1
-        _FALLBACK_USERS[clean_username] = {
-            "id": user_id,
-            "username": clean_username,
-            "email": email,
-            "password_hash": password_hash,
-            "full_name": full_name,
-            "role": role,
-            "registration_code": HARDCODED_TEACHER_CODE,
-        }
+        user_id = _store_fallback(new_record)
 
-    token = f"smartcctv_token_{clean_username}_{int(time.time())}"
-    logger.info("New teacher account registered: %s (Role: %s)", clean_username, role)
+    user = {"id": user_id, "username": clean_username, "full_name": full_name, "role": role, "email": email}
+    record_audit(
+        "admin_registered",
+        f"Administrator account '{clean_username}' was created.",
+        actor={"sub": clean_username, "role": role},
+        target=clean_username,
+        request=request,
+        severity="warning",
+    )
+    logger.info("New administrator account registered: %s", clean_username)
     return {
-        "access_token": token,
+        "access_token": create_token(clean_username, role, user_id),
         "token_type": "bearer",
-        "user": {
-            "id": user_id,
-            "username": clean_username,
-            "full_name": full_name,
-            "role": role,
-            "email": email,
-        },
-        "message": "Teacher account successfully authorized and registered."
+        "user": user,
+        "message": "Administrator account authorized. Teacher accounts are created from Teacher Management.",
     }
 
 @router.post("/login")
-def login(creds: LoginRequest):
-    """Authenticate Teacher with username/email and password."""
+def login(creds: LoginRequest, request: Request):
+    """Authenticate an administrator or teacher with username/email and password."""
     clean_identifier = creds.username.strip().lower()
     provided_hash = hash_password(creds.password)
 
@@ -138,64 +136,65 @@ def login(creds: LoginRequest):
 
     if client:
         try:
-            # Query users table by username or email
             res = client.table("users").select("*").or_(
                 f"username.eq.{clean_identifier},email.eq.{clean_identifier}"
             ).execute()
             if res.data and len(res.data) > 0:
                 user_row = res.data[0]
                 if user_row.get("password_hash") == provided_hash:
+                    if user_row.get("is_active") is False:
+                        raise HTTPException(status_code=403, detail="This account has been deactivated by an administrator.")
                     matched_user = user_row
-                    # Update last login timestamp asynchronously / quietly
                     try:
                         client.table("users").update({"last_login_at": "now()"}).eq("id", user_row["id"]).execute()
                     except Exception:
                         pass
+        except HTTPException:
+            raise
         except Exception as e:
             logger.warning("Supabase user login query failed (%s). Checking fallback store.", e)
 
     # Check fallback store if not matched via Supabase
     if not matched_user:
-        for u in _FALLBACK_USERS.values():
-            if (u["username"] == clean_identifier or u.get("email") == clean_identifier) and u["password_hash"] == provided_hash:
-                matched_user = u
-                break
+        candidate = find_fallback(clean_identifier)
+        if candidate and candidate["password_hash"] == provided_hash:
+            matched_user = candidate
 
-    # Also support default administrator / teacher credentials
-    if not matched_user and clean_identifier in ("teacher", "admin") and creds.password in ("password123", "teacher2026"):
-        matched_user = {
-            "id": 1,
-            "username": "teacher",
-            "full_name": "Faculty Instructor",
-            "role": "teacher",
-            "email": "teacher@smartcctv.edu",
-        }
+    # Demo credentials for the offline prototype, so the console stays reviewable without a database
+    if not matched_user and clean_identifier in ("teacher", "admin") and creds.password in DEMO_PASSWORDS:
+        matched_user = find_fallback(clean_identifier)
 
     if not matched_user:
         logger.warning("Failed login attempt for user '%s'", creds.username)
+        record_audit(
+            "login_failed",
+            f"Rejected sign-in attempt for '{creds.username}'.",
+            target=clean_identifier,
+            request=request,
+            severity="warning",
+        )
         raise HTTPException(
             status_code=401,
             detail="Authentication failed: Invalid username or password."
         )
 
-    # Confirm user is teacher
     role = matched_user.get("role", "teacher")
-    if role != "teacher":
-        raise HTTPException(
-            status_code=403,
-            detail="Access Denied: Only users with the Teacher role are authorized to access this system."
-        )
-
-    token = f"smartcctv_token_{matched_user['username']}_{int(time.time())}"
-    logger.info("Teacher login verified: %s", matched_user["username"])
+    user = _public_user(matched_user)
+    record_audit(
+        "login",
+        f"{user['username']} signed in as {role}.",
+        actor={"sub": user["username"], "role": role},
+        target=user["username"],
+        request=request,
+    )
+    logger.info("Login verified: %s (role: %s)", user["username"], role)
     return {
-        "access_token": token,
+        "access_token": create_token(user["username"], role, user["id"]),
         "token_type": "bearer",
-        "user": {
-            "id": matched_user.get("id", 1),
-            "username": matched_user.get("username", clean_identifier),
-            "full_name": matched_user.get("full_name") or matched_user.get("username", "Teacher").title(),
-            "role": "teacher",
-            "email": matched_user.get("email", ""),
-        }
+        "user": user,
     }
+
+@router.get("/me")
+def read_current_user(claims: dict = Depends(get_current_user)):
+    """Return the identity carried by the bearer token."""
+    return {"username": claims.get("sub"), "role": claims.get("role"), "id": claims.get("uid")}

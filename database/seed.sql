@@ -7,14 +7,14 @@ BEGIN;
 -- Student roster. `student_id` is the stable external/student-number value.
 INSERT INTO students (student_id, full_name, section, grade_level, has_face)
 VALUES
-    ('STU-001', 'Maria Santos',     'Section A', 'Grade 10', FALSE),
-    ('STU-002', 'Juan Dela Cruz',  'Section A', 'Grade 10', FALSE),
-    ('STU-003', 'Ana Reyes',       'Section B', 'Grade 11', FALSE),
-    ('STU-004', 'Carlos Mendoza',  'Section B', 'Grade 11', FALSE),
-    ('STU-005', 'Elena Garcia',    'Section C', 'Grade 9',  FALSE),
-    ('STU-006', 'Miguel Torres',   'Section C', 'Grade 9',  FALSE),
-    ('STU-007', 'Sofia Ramos',     'Section A', 'Grade 10', FALSE),
-    ('STU-008', 'Luis Bautista',   'Section D', 'Grade 12', FALSE)
+    ('STU-001', 'Maria Santos',     '4th Year - Section A', '4th Year', FALSE),
+    ('STU-002', 'Juan Dela Cruz',  '4th Year - Section A', '4th Year', FALSE),
+    ('STU-003', 'Ana Reyes',       '4th Year - Section B', '4th Year', FALSE),
+    ('STU-004', 'Carlos Mendoza',  '4th Year - Section B', '4th Year', FALSE),
+    ('STU-005', 'Elena Garcia',    '3rd Year - Section C', '3rd Year', FALSE),
+    ('STU-006', 'Miguel Torres',   '3rd Year - Section C', '3rd Year', FALSE),
+    ('STU-007', 'Sofia Ramos',     '4th Year - Section A', '4th Year', FALSE),
+    ('STU-008', 'Luis Bautista',   '4th Year - Section D', '4th Year', FALSE)
 ON CONFLICT (student_id) DO UPDATE
 SET full_name = EXCLUDED.full_name,
     section = EXCLUDED.section,

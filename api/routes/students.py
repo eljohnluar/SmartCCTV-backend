@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import Response
 from typing import List, Optional
+from api.middleware.auth import get_optional_account
 from api.models.student import StudentCreate, StudentUpdate, StudentResponse
 from database.queries import (
     get_all_students,
@@ -14,27 +15,43 @@ from ai_engine.face_recognition.recognizer import face_recognizer
 from ai_engine.face_recognition.live_matcher import live_face_matcher
 from database.storage import delete_face_image, download_face_image, upload_face_image
 from utils.logger import logger
+from utils.sections import resolve_allowed_sections, year_level_of
 from utils.uniform_policy import get_gesture_attendance_settings, save_student_gesture_enrollment
 from ai_engine.gesture_detection import gesture_detector
 
 router = APIRouter(prefix="/students", tags=["Students"])
 
+
+def _guard_section(section: Optional[str], claims: Optional[dict]) -> None:
+    """Reject a section the signed-in teacher does not handle."""
+    allowed = resolve_allowed_sections(claims)
+    if allowed and section and section not in allowed:
+        raise HTTPException(status_code=403, detail="That section is outside the year levels and sections assigned to your account.")
+
+
 @router.get("", response_model=List[StudentResponse])
-def list_students(section: Optional[str] = None):
-    """Retrieve all enrolled students with optional section filter"""
-    return get_all_students(section=section)
+def list_students(section: Optional[str] = None, claims: Optional[dict] = Depends(get_optional_account)):
+    """Retrieve enrolled students, limited to the sections the caller handles"""
+    students = get_all_students(section=section)
+    allowed = resolve_allowed_sections(claims)
+    if allowed:
+        students = [student for student in students if student.get("section") in allowed]
+    return students
 
 @router.post("", response_model=StudentResponse)
-def add_student(student_in: StudentCreate):
+def add_student(student_in: StudentCreate, claims: Optional[dict] = Depends(get_optional_account)):
     """Enroll a new student record"""
     data = student_in.dict()
+    _guard_section(data.get("section"), claims)
+    if data.get("section"):
+        data["grade_level"] = year_level_of(data["section"]) or data.get("grade_level")
     created = create_student_record(data)
     return created
 
 @router.get("/{student_id}", response_model=StudentResponse)
-def get_student(student_id: int):
+def get_student(student_id: int, claims: Optional[dict] = Depends(get_optional_account)):
     """Get student details by numerical ID"""
-    all_s = get_all_students()
+    all_s = list_students(claims=claims)
     match = next((s for s in all_s if s["id"] == student_id), None)
     if not match:
         raise HTTPException(status_code=404, detail="Student not found")
@@ -59,9 +76,12 @@ def get_front_enrollment_photo(student_id: int):
         raise HTTPException(status_code=404, detail="The front enrollment photo could not be retrieved.") from error
 
 @router.put("/{student_id}", response_model=StudentResponse)
-def update_student(student_id: int, updates: StudentUpdate):
+def update_student(student_id: int, updates: StudentUpdate, claims: Optional[dict] = Depends(get_optional_account)):
     """Update student information"""
     data = {k: v for k, v in updates.dict().items() if v is not None}
+    _guard_section(data.get("section"), claims)
+    if data.get("section"):
+        data["grade_level"] = year_level_of(data["section"])
     updated = update_student_record(student_id, data)
     if not updated:
         raise HTTPException(status_code=404, detail="Student not found")

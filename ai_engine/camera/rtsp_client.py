@@ -27,6 +27,7 @@ class CameraCapture:
         self.is_connected = False
         self.thread: Optional[threading.Thread] = None
         self.latest_frame: Optional[np.ndarray] = None
+        self.frame_seq = 0
         # Face recognition marks enrolled students by default as soon as the
         # camera is available. The dashboard can still pause it explicitly.
         self.attendance_recording = True
@@ -62,6 +63,10 @@ class CameraCapture:
             self.cap = cv2.VideoCapture(self.camera_index)
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, settings.CAMERA_FRAME_WIDTH)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, settings.CAMERA_FRAME_HEIGHT)
+            self.cap.set(cv2.CAP_PROP_FPS, max(self.target_fps, settings.STREAM_MAX_FPS))
+            # Keep the driver queue at one frame so we always publish the newest
+            # picture instead of draining a backlog of stale ones.
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
             if not self.cap.isOpened():
                 self.is_connected = False
@@ -70,27 +75,25 @@ class CameraCapture:
                     "Ensure OBS Virtual Camera is started (Controls -> Start Virtual Camera)."
                 )
 
-            frame_interval = 1.0 / max(1, self.target_fps)
-
+            # read() blocks until the device produces a frame, so no artificial
+            # throttle is needed; pacing only applies when reads fail.
             while self.is_running:
-                start_time = time.time()
                 ret, frame = self.cap.read()
                 if ret and frame is not None:
                     self.is_connected = True
                     with self.lock:
                         self.latest_frame = frame
+                        self.frame_seq += 1
 
                     if self.on_frame_callback:
                         try:
                             self.on_frame_callback(frame)
                         except Exception as cb_err:
                             logger.error(f"Error in on_frame callback: {cb_err}")
+                    continue
 
-                elapsed = time.time() - start_time
-                if not ret:
-                    self.is_connected = False
-                sleep_time = max(0.001, frame_interval - elapsed)
-                time.sleep(sleep_time)
+                self.is_connected = False
+                time.sleep(0.05)
 
         except ImportError:
             logger.warning("OpenCV (cv2) not installed. Camera loop running in simulation mode.")
@@ -108,6 +111,18 @@ class CameraCapture:
 
     def get_latest_frame(self) -> Optional[np.ndarray]:
         with self.lock:
-            return self.latest_frame.copy() if self.latest_frame is not None else None
+            frame = self.latest_frame
+        return frame.copy() if frame is not None else None
+
+    def read_if_new(self, last_seq: int):
+        """Return (frame, seq) only when the device produced a frame since last_seq."""
+        with self.lock:
+            if self.frame_seq == last_seq or self.latest_frame is None:
+                return None, last_seq
+            # The capture thread swaps in a brand new array each read, so holding
+            # a reference is stable and the copy can happen outside the lock.
+            frame_ref = self.latest_frame
+            seq = self.frame_seq
+        return frame_ref.copy(), seq
 
 camera_stream = CameraCapture()

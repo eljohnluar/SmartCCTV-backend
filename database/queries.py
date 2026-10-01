@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from database.supabase_client import get_supabase
 from utils.logger import logger
-from utils.uniform_policy import determine_checkin_status, get_gesture_enrolled_students
+from utils.uniform_policy import determine_checkin_status, get_gesture_enrolled_students, get_schedule_settings
 
 
 class DatabaseUnavailableError(RuntimeError):
@@ -208,6 +208,13 @@ def mark_attendance(
         # status are derived even when callers submit an ISO UTC timestamp.
         checked_in_at = checked_in_at.astimezone()
         status = determine_checkin_status(checked_in_at)
+        if status == "closed":
+            schedule = get_schedule_settings()
+            raise ValueError(
+                "Attendance check-in has timed out. The window closes "
+                f"{schedule['attendance_timeout_minutes']} minutes after "
+                f"{schedule['checkin_time']}."
+            )
         data = {
             "student_id": student_id,
             "class_date": checked_in_at.date().isoformat(),
@@ -220,6 +227,8 @@ def mark_attendance(
             raise DatabaseUnavailableError("Database did not return the attendance record.")
         return result.data[0]
     except DatabaseUnavailableError:
+        raise
+    except ValueError:
         raise
     except Exception as error:
         raise _database_error("attendance update", error) from error

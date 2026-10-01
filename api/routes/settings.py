@@ -1,8 +1,9 @@
 from typing import List, Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from api.middleware.auth import require_password_confirmation
 from utils.uniform_policy import (
     get_gesture_attendance_settings,
     get_runtime_controls,
@@ -32,6 +33,7 @@ class VoiceSettingsPayload(BaseModel):
 class ScheduleSettingsPayload(BaseModel):
     checkin_time: str
     late_grace_minutes: int = 30
+    attendance_timeout_minutes: int = 120
 
 
 class GestureAttendanceSettingsPayload(BaseModel):
@@ -52,7 +54,7 @@ def get_uniform_color_policy():
 
 
 @router.put("/uniform-policy")
-def update_uniform_color_policy(payload: UniformPolicyPayload):
+def update_uniform_color_policy(payload: UniformPolicyPayload, _: dict = Depends(require_password_confirmation)):
     """Set the colors accepted as compliant student uniforms."""
     try:
         return save_uniform_policy(payload.uniform_colors)
@@ -66,7 +68,7 @@ def get_voice_configuration():
 
 
 @router.put("/voice")
-def update_voice_configuration(payload: VoiceSettingsPayload):
+def update_voice_configuration(payload: VoiceSettingsPayload, _: dict = Depends(require_password_confirmation)):
     return save_voice_settings(payload.voice_gender)
 
 
@@ -77,7 +79,7 @@ def get_gesture_attendance_configuration():
 
 
 @router.put("/gesture-attendance")
-def update_gesture_attendance_configuration(payload: GestureAttendanceSettingsPayload):
+def update_gesture_attendance_configuration(payload: GestureAttendanceSettingsPayload, _: dict = Depends(require_password_confirmation)):
     result = save_gesture_attendance_settings(payload.gesture_attendance_enabled)
     publish_from_worker({"type": "gesture_attendance_updated", **result})
     return result
@@ -89,7 +91,7 @@ def get_runtime_control_configuration():
 
 
 @router.put("/runtime-controls")
-def update_runtime_control_configuration(payload: RuntimeControlsPayload):
+def update_runtime_control_configuration(payload: RuntimeControlsPayload, _: dict = Depends(require_password_confirmation)):
     try:
         result = save_runtime_controls(**payload.model_dump())
         publish_from_worker({"type": "runtime_controls_updated", **result})
@@ -105,10 +107,14 @@ def get_schedule_configuration():
 
 
 @router.put("/schedule")
-def update_schedule_configuration(payload: ScheduleSettingsPayload):
+def update_schedule_configuration(payload: ScheduleSettingsPayload, _: dict = Depends(require_password_confirmation)):
     """Set the target check-in time and late grace window."""
     try:
-        result = save_schedule_settings(payload.checkin_time, payload.late_grace_minutes)
+        result = save_schedule_settings(
+            payload.checkin_time,
+            payload.late_grace_minutes,
+            payload.attendance_timeout_minutes,
+        )
         publish_from_worker({"type": "schedule_updated", **result})
         return result
     except ValueError as error:

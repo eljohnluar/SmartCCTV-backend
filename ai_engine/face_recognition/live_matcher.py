@@ -9,7 +9,7 @@ import numpy as np
 from database.queries import create_alert_record, get_face_embeddings, mark_attendance
 from websocket_manager import publish_from_worker
 from utils.logger import logger
-from utils.uniform_policy import get_runtime_controls, get_uniform_policy
+from utils.uniform_policy import determine_checkin_status, get_runtime_controls, get_uniform_policy
 from ai_engine.security.compliance import compliance_checker
 from .recognizer import face_recognizer
 from ai_engine.voice.announcer import voice_announcer
@@ -20,6 +20,9 @@ FaceBox = Tuple[int, int, int, int]
 # Minimum seconds between trespasser announcements per unknown face position.
 # A per-session set prevents re-announcing after each detection frame.
 _UNKNOWN_ANNOUNCE_COOLDOWN = 30.0
+
+# Seconds between "check-in closed" reminders once the attendance window times out.
+_CLOSED_ANNOUNCE_COOLDOWN = 300.0
 
 
 class LiveFaceMatcher:
@@ -37,6 +40,7 @@ class LiveFaceMatcher:
 
         # Track last time a trespasser announcement fired (global cooldown)
         self._last_unknown_announce: float = 0.0
+        self._last_closed_announce: float = 0.0
 
     def reset_marked(self) -> None:
         """Clear today's confirmed markings and detection counts."""
@@ -154,6 +158,15 @@ class LiveFaceMatcher:
 
         if not record_attendance:
             self._confirmations.clear()
+            return labels
+
+        # --- Attendance window timeout ---
+        if determine_checkin_status() == "closed":
+            self._confirmations.clear()
+            now = time.monotonic()
+            if now - self._last_closed_announce >= _CLOSED_ANNOUNCE_COOLDOWN:
+                self._last_closed_announce = now
+                voice_announcer.announce_checkin_closed()
             return labels
 
         # --- Attendance confirmation ---

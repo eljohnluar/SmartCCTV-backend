@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import Response
 from typing import List, Optional
-from api.middleware.auth import get_optional_account
+from api.middleware.auth import get_optional_account, require_password_confirmation
 from api.models.student import StudentCreate, StudentUpdate, StudentResponse
 from database.queries import (
     get_all_students,
@@ -39,7 +39,7 @@ def list_students(section: Optional[str] = None, claims: Optional[dict] = Depend
     return students
 
 @router.post("", response_model=StudentResponse)
-def add_student(student_in: StudentCreate, claims: Optional[dict] = Depends(get_optional_account)):
+def add_student(student_in: StudentCreate, claims: Optional[dict] = Depends(get_optional_account), _: dict = Depends(require_password_confirmation)):
     """Enroll a new student record"""
     data = student_in.dict()
     _guard_section(data.get("section"), claims)
@@ -88,7 +88,7 @@ def update_student(student_id: int, updates: StudentUpdate, claims: Optional[dic
     return updated
 
 @router.delete("/{student_id}")
-def delete_student(student_id: int):
+def delete_student(student_id: int, _: dict = Depends(require_password_confirmation)):
     """Remove student record"""
     success = delete_student_record(student_id)
     if not success:
@@ -99,6 +99,7 @@ def delete_student(student_id: int):
 async def enroll_face(
     student_id: int = Form(...),
     images: List[UploadFile] = File(...),
+    _: dict = Depends(require_password_confirmation),
 ):
     """
     Enroll four face-angle samples for facial recognition.

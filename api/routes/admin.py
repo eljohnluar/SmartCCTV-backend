@@ -1,10 +1,10 @@
 from datetime import date
 from typing import Annotated, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from api.middleware.auth import require_admin
+from api.middleware.auth import require_admin, require_password_confirmation, verify_account_password
 from database.queries import (
     DatabaseUnavailableError,
     create_account_record,
@@ -193,10 +193,25 @@ def create_teacher(payload: TeacherCreateRequest, request: Request, claims: Admi
 
 
 @router.put("/teachers/{user_id}")
-def update_teacher(user_id: int, payload: TeacherUpdateRequest, request: Request, claims: AdminClaims):
+def update_teacher(
+    user_id: int,
+    payload: TeacherUpdateRequest,
+    request: Request,
+    claims: AdminClaims,
+    confirm_password: Optional[str] = Header(default=None, alias="X-Confirm-Password"),
+):
     updates = {key: value for key, value in payload.model_dump().items() if value is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="No changes were submitted.")
+
+    if "is_active" in updates:
+        if not confirm_password:
+            raise HTTPException(
+                status_code=401,
+                detail="Enter your password to change an account's active state.",
+            )
+        if not verify_account_password(claims.get("sub", ""), confirm_password):
+            raise HTTPException(status_code=401, detail="Password does not match your account.")
 
     if "role" in updates:
         updates["role"] = _normalise_role(updates["role"])
@@ -236,7 +251,7 @@ def update_teacher(user_id: int, payload: TeacherUpdateRequest, request: Request
 
 
 @router.delete("/teachers/{user_id}")
-def delete_teacher(user_id: int, request: Request, claims: AdminClaims):
+def delete_teacher(user_id: int, request: Request, claims: AdminClaims, _: dict = Depends(require_password_confirmation)):
     existing = next((account for account in _list_accounts() if account.get("id") == user_id), None)
     if not existing:
         raise HTTPException(status_code=404, detail="Account not found.")

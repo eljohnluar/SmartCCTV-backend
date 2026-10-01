@@ -140,19 +140,25 @@ def save_runtime_controls(
 
 
 def get_schedule_settings() -> Dict[str, Any]:
-    """Return the configured check-in time and late grace window."""
+    """Return the configured check-in time, late grace window and check-in timeout."""
     with _LOCK:
         settings = _read_settings()
         checkin_time = settings.get("checkin_time", "08:00")
         grace = max(0, min(180, int(settings.get("late_grace_minutes", 30))))
+        timeout = max(grace, min(1440, int(settings.get("attendance_timeout_minutes", 120))))
         return {
             "checkin_time": checkin_time,
             "late_grace_minutes": grace,
+            "attendance_timeout_minutes": timeout,
         }
 
 
-def save_schedule_settings(checkin_time: str, late_grace_minutes: int = 30) -> Dict[str, Any]:
-    """Persist the check-in time (HH:MM, 24-hour) and grace window."""
+def save_schedule_settings(
+    checkin_time: str,
+    late_grace_minutes: int = 30,
+    attendance_timeout_minutes: int = 120,
+) -> Dict[str, Any]:
+    """Persist the check-in time (HH:MM, 24-hour), grace window and timeout."""
     parts = checkin_time.strip().split(":")
     if len(parts) != 2 or not all(p.isdigit() for p in parts):
         raise ValueError("Check-in time must be in HH:MM format (24-hour).")
@@ -161,28 +167,36 @@ def save_schedule_settings(checkin_time: str, late_grace_minutes: int = 30) -> D
         raise ValueError("Invalid hour or minute in check-in time.")
     if not 0 <= int(late_grace_minutes) <= 180:
         raise ValueError("Late grace minutes must be between 0 and 180.")
+    if not 1 <= int(attendance_timeout_minutes) <= 1440:
+        raise ValueError("Attendance timeout must be between 1 and 1440 minutes.")
+    if int(attendance_timeout_minutes) < int(late_grace_minutes):
+        raise ValueError("Attendance timeout must be at least as long as the late grace window.")
     formatted = f"{h:02d}:{m:02d}"
 
     with _LOCK:
         data = _read_settings()
         data["checkin_time"] = formatted
         data["late_grace_minutes"] = int(late_grace_minutes)
+        data["attendance_timeout_minutes"] = int(attendance_timeout_minutes)
         _write_settings(data)
     return {
         "checkin_time": formatted,
         "late_grace_minutes": int(late_grace_minutes),
+        "attendance_timeout_minutes": int(attendance_timeout_minutes),
     }
 
 
 def determine_checkin_status(checkin_dt: Any = None) -> str:
     """
     Determine attendance status based on set check-in time:
-    - If check-in time is early or within the configured grace window: 'present'
-    - If over the configured grace window after check-in time: 'late'
+    - Before the grace cutoff: 'present'
+    - After the grace cutoff but inside the attendance window: 'late'
+    - After the attendance window times out: 'closed' (no check-in accepted)
     """
     schedule = get_schedule_settings()
     checkin_time_str = schedule.get("checkin_time", "08:00")
     grace_minutes = int(schedule.get("late_grace_minutes", 30))
+    timeout_minutes = int(schedule.get("attendance_timeout_minutes", 120))
 
     now = checkin_dt or datetime.now()
     if isinstance(now, str):
@@ -200,6 +214,9 @@ def determine_checkin_status(checkin_dt: Any = None) -> str:
         hour, minute = map(int, checkin_time_str.split(":"))
         target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
         late_cutoff = target + timedelta(minutes=grace_minutes)
+        attendance_cutoff = target + timedelta(minutes=timeout_minutes)
+        if now > attendance_cutoff:
+            return "closed"
         if now > late_cutoff:
             return "late"
         return "present"

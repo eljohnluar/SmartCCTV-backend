@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Optional
 from datetime import date
-from api.middleware.auth import get_optional_account
+from api.middleware.auth import get_optional_account, require_password_confirmation
 from api.models.attendance import (
     AttendanceManualMark,
     AttendanceRecord,
@@ -71,11 +71,14 @@ def get_attendance_by_date(query_date: str, claims: Optional[dict] = Depends(get
 @router.post("/manual")
 def manual_mark(payload: AttendanceManualMark):
     """Record attendance and derive status from the check-in time."""
-    record = mark_attendance(
-        student_id=payload.student_id,
-        confidence=payload.confidence,
-        check_in_time=payload.check_in_time,
-    )
+    try:
+        record = mark_attendance(
+            student_id=payload.student_id,
+            confidence=payload.confidence,
+            check_in_time=payload.check_in_time,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     return {
         "success": True,
         "message": f"Attendance updated for student {payload.student_id}",
@@ -83,7 +86,7 @@ def manual_mark(payload: AttendanceManualMark):
     }
 
 @router.post("/reset")
-def reset_attendance():
+def reset_attendance(_: dict = Depends(require_password_confirmation)):
     """Reset all marked attendance records for today"""
     today_str = date.today().isoformat()
     try:

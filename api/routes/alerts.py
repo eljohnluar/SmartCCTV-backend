@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
+from api.middleware.auth import require_password_confirmation
 from database.queries import get_alerts_list, update_alert_record, create_alert_record, reset_all_alerts
 from ai_engine.security.weapon_detection import weapon_detector
 from ai_engine.voice.announcer import voice_announcer
@@ -52,7 +53,7 @@ def update_alert(alert_id: int, payload: AlertUpdatePayload):
     return updated
 
 @router.post("/reset")
-def reset_alerts():
+def reset_alerts(_: dict = Depends(require_password_confirmation)):
     """Reset / clear all security alerts and reset detection cooldowns"""
     try:
         count = reset_all_alerts()

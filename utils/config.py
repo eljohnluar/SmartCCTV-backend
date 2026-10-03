@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     ADMIN_REGISTRATION_CODE: str = Field(default="ADMIN2026", env="ADMIN_REGISTRATION_CODE")
     TEACHER_PROVISIONING_CODE: str = Field(default="TEACHER2026", env="TEACHER_PROVISIONING_CODE")
 
+    # Deployment
+    CORS_ORIGINS: str = Field(default="", env="CORS_ORIGINS")
+
     # Camera (OBS Virtual Camera)
     CAMERA_INDEX: int = Field(default=1, env="CAMERA_INDEX")
     CAMERA_FPS: int = Field(default=15, env="CAMERA_FPS")

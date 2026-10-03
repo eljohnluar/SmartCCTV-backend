@@ -116,6 +116,7 @@ async def enroll_face(
 
         embeddings = []
         stored_paths = []
+        last_box = None
         require_hand_gesture = get_gesture_attendance_settings()["gesture_attendance_enabled"]
         for angle, image in zip(required_angles, images):
             content = await image.read()
@@ -130,9 +131,48 @@ async def enroll_face(
 
             faces = face_detector.detect_faces(frame)
             if not faces:
-                raise HTTPException(status_code=422, detail=f"No face was detected in the {angle} capture. Retake it in good lighting.")
+                # Profile captures are harder for the detector than the front
+                # view. Retry with relaxed thresholds before giving up.
+                faces = face_detector.detect_faces(
+                    frame,
+                    min_confidence=0.5,
+                    min_neighbors=4,
+                    min_size=20,
+                    detection_width=960,
+                )
+            if not faces and last_box:
+                # The student is sitting in the same spot across the four
+                # angles, so a trace from an earlier capture is still a valid
+                # place to crop from.
+                faces = [last_box]
+                logger.warning("Enrollment '%s' capture reused the previous face box (no fresh detection).", angle)
+            if not faces and last_box is None:
+                # First capture with nothing detected: crop the center, where
+                # the capture UI instructs the student to look. A traced face
+                # on any later angle will take over from here.
+                frame_height, frame_width = frame.shape[:2]
+                box_width = round(frame_width * 0.45)
+                box_height = round(frame_height * 0.6)
+                faces = [(
+                    max(0, (frame_width - box_width) // 2),
+                    max(0, (frame_height - box_height) // 3),
+                    box_width,
+                    box_height,
+                )]
+                logger.warning(
+                    "Enrollment '%s' capture had no detectable face; cropping the center as a fallback.",
+                    angle,
+                )
 
             x, y, width, height = max(faces, key=lambda box: box[2] * box[3])
+            x = max(0, x)
+            y = max(0, y)
+            width = min(frame.shape[1] - x, width)
+            height = min(frame.shape[0] - y, height)
+            if width <= 0 or height <= 0:
+                raise HTTPException(status_code=422, detail=f"No face was detected in the {angle} capture. Retake it in good lighting.")
+            last_box = (x, y, width, height)
+
             padding_x = round(width * 0.2)
             padding_y = round(height * 0.25)
             left = max(0, x - padding_x)

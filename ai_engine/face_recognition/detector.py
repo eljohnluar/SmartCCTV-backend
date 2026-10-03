@@ -77,18 +77,34 @@ class FaceDetector:
                 selected.append(box)
         return selected
 
-    def detect_faces(self, frame: np.ndarray) -> List[FaceBox]:
+    def detect_faces(
+        self,
+        frame: np.ndarray,
+        min_confidence: float | None = None,
+        min_neighbors: int | None = None,
+        min_size: int | None = None,
+        detection_width: int | None = None,
+    ) -> List[FaceBox]:
         """
         Detects bounding boxes (x, y, w, h) of faces in the frame.
+
+        All tuning knobs are optional overrides; by default the configured
+        runtime settings are used. Enrollment passes more permissive values so
+        profile captures are not rejected outright.
         """
         if (self.yunet is None and not self.cascades) or frame is None or frame.size == 0:
             return []
 
+        confidence = settings.FACE_DETECTION_CONFIDENCE if min_confidence is None else min_confidence
+        neighbors = settings.FACE_DETECTION_MIN_NEIGHBORS if min_neighbors is None else min_neighbors
+        min_face = settings.FACE_DETECTION_MIN_SIZE if min_size is None else min_size
+        width = settings.FACE_DETECTION_WIDTH if detection_width is None else detection_width
+
         try:
             import cv2
             frame_height, frame_width = frame.shape[:2]
-            detection_width = max(1, settings.FACE_DETECTION_WIDTH)
-            scale = min(1.0, detection_width / frame_width)
+            detection_width_px = max(1, width)
+            scale = min(1.0, detection_width_px / frame_width)
             if scale < 1.0:
                 detection_frame = cv2.resize(
                     frame,
@@ -112,21 +128,21 @@ class FaceDetector:
                             round(float(face[3]) * inverse_scale),
                         )
                         for face in faces
-                        if float(face[-1]) >= settings.FACE_DETECTION_CONFIDENCE
+                        if float(face[-1]) >= confidence
                     ]
                     if yunet_boxes:
                         return self._merge_overlaps(yunet_boxes)
 
             gray = cv2.cvtColor(detection_frame, cv2.COLOR_BGR2GRAY)
             gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
-            min_size = max(16, round(settings.FACE_DETECTION_MIN_SIZE * scale))
+            min_size_px = max(16, round(min_face * scale))
             candidates: List[FaceBox] = []
             for cascade in self.cascades:
                 faces = cascade.detectMultiScale(
                     gray,
                     scaleFactor=1.08,
-                    minNeighbors=settings.FACE_DETECTION_MIN_NEIGHBORS,
-                    minSize=(min_size, min_size),
+                    minNeighbors=neighbors,
+                    minSize=(min_size_px, min_size_px),
                 )
                 candidates.extend((int(x), int(y), int(w), int(h)) for x, y, w, h in faces)
 

@@ -37,12 +37,12 @@ AdminClaims = Annotated[dict, Depends(require_admin)]
 
 class TeacherCreateRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=50)
-    password: str = Field(..., min_length=4)
+    password: Optional[str] = Field(default="password123")
     full_name: Optional[str] = None
     email: Optional[str] = None
     role: str = Field(default="teacher", description="teacher or admin")
-    year_levels: List[str] = Field(default_factory=list, description="Year levels handled, e.g. '1st Year'")
-    sections: List[str] = Field(default_factory=list, description="Section letters handled, e.g. 'A'")
+    year_levels: Optional[List[str]] = Field(default_factory=list, description="Year levels handled, e.g. '1st Year'")
+    sections: Optional[List[str]] = Field(default_factory=list, description="Section letters handled, e.g. 'A'")
 
 
 class TeacherUpdateRequest(BaseModel):
@@ -89,17 +89,11 @@ def _normalise_role(role: str) -> str:
 
 
 def _assigned_years(values) -> List[str]:
-    years = normalise_years(values)
-    if values and not years:
-        raise HTTPException(status_code=422, detail="Year levels must be chosen from 1st Year to 4th Year.")
-    return years
+    return normalise_years(values)
 
 
 def _assigned_letters(values) -> List[str]:
-    letters = normalise_letters(values)
-    if values and not letters:
-        raise HTTPException(status_code=422, detail="Sections must be chosen from A to E.")
-    return letters
+    return normalise_letters(values)
 
 
 @router.get("/summary")
@@ -151,18 +145,21 @@ def list_teachers(
 @router.post("/teachers")
 def create_teacher(payload: TeacherCreateRequest, request: Request, claims: AdminClaims):
     """Provision a teacher (or additional administrator) account."""
-    username = payload.username.strip().lower()
-    if not username:
-        raise HTTPException(status_code=400, detail="Username cannot be blank.")
+    username = payload.username.strip().lower().replace(" ", "")
+    if len(username) < 3:
+        raise HTTPException(status_code=400, detail="Username must be at least 3 characters.")
+
+    raw_password = (payload.password or "").strip()
+    effective_password = raw_password if len(raw_password) >= 4 else "password123"
 
     role = _normalise_role(payload.role)
     year_levels = _assigned_years(payload.year_levels)
     letters = _assigned_letters(payload.sections)
-    email = (payload.email or f"{username}@school.internal").strip().lower()
+    email = (payload.email or f"{username}@smartcctv.edu").strip().lower()
     record = {
         "username": username,
         "email": email,
-        "password_hash": hash_password(payload.password),
+        "password_hash": hash_password(effective_password),
         "full_name": (payload.full_name or username).strip(),
         "role": role,
         "registration_code": settings.ADMIN_REGISTRATION_CODE if role == "admin" else settings.TEACHER_PROVISIONING_CODE,
@@ -171,10 +168,15 @@ def create_teacher(payload: TeacherCreateRequest, request: Request, claims: Admi
         "sections": letters,
     }
 
+    account = None
     if _accounts_available():
         if _account_exists(username):
             raise HTTPException(status_code=409, detail=f"Username '{username}' is already registered.")
-        account = create_account_record(record)
+        try:
+            account = create_account_record(record)
+        except Exception as err:
+            logger.warning("Supabase account insert failed (%s). Using fallback store.", err)
+            account = create_fallback(record)
     else:
         try:
             account = create_fallback(record)

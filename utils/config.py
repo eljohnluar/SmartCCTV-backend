@@ -1,5 +1,8 @@
+import os
+import sys
+
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import Field, ValidationError
 from typing import Optional
 
 class Settings(BaseSettings):
@@ -72,4 +75,29 @@ class Settings(BaseSettings):
         env_file = ".env"
         extra = "ignore"
 
-settings = Settings()
+
+def _load_settings() -> Settings:
+    """Instantiate settings, degrading gracefully if env vars hold bad values.
+
+    On cloud hosts (Railway) every variable arrives via os.environ. A single
+    mistyped value (e.g. CAMERA_FPS=abc) would otherwise crash the whole app at
+    import time. Drop only the offending variables, keep the valid ones, and
+    fall back to defaults for the rest.
+    """
+    try:
+        return Settings()
+    except ValidationError as error:
+        for issue in error.errors():
+            field = (issue.get("loc") or (None,))[0]
+            print(
+                f"[CONFIG ERROR] Environment variable '{field}' has an invalid value "
+                f"{issue.get('input')!r} - using its default instead.",
+                file=sys.stderr,
+            )
+            os.environ.pop(field, None)
+        # Retry without the bad variables (and without the .env file, so a
+        # locally broken .env cannot wedge the retry loop).
+        return Settings(_env_file=None)
+
+
+settings = _load_settings()

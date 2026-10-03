@@ -42,7 +42,7 @@ venv.bak/
 # DeepFace and model weights
 .deepface/
 weights/
-models/
+/models/
 *.pt
 *.pth
 *.onnx

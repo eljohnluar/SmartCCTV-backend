@@ -91,6 +91,11 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"WebSocket error: {e}")
         manager.disconnect(websocket)
 
+# Lightweight liveness probe (no DB) used by Railway's healthcheck.
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "service": "SmartCCTV AI Backend"}
+
 # Root status
 @app.get("/")
 def root():

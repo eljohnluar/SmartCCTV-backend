@@ -1,0 +1,3 @@
+# Railway build config (NIXPACKS): system libraries OpenCV needs on minimal Debian images.
+[phases.setup]
+aptPkgs = ["libgl1", "libglib2.0-0", "libxcb1", "libxkbcommon-x11-0"]

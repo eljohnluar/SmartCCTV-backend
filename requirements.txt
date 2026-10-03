@@ -16,5 +16,6 @@ reportlab>=4.1.0
 pandas>=2.2.1
 openpyxl>=3.1.2
 # MUST stay last: ultralytics installs opencv-python (GUI build) which overwrites cv2.
-# Headless must win, or cv2 fails on minimal Linux images (missing libxcb/libGL).
-opencv-python-headless>=4.9.0.80
+# Headless must win, and 4.9.0.80 is pinned because newer headless wheels still link
+# X11 libs (libxcb) that break on minimal Linux images.
+opencv-python-headless==4.9.0.80

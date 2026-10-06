@@ -91,6 +91,34 @@ ON CONFLICT (username) DO NOTHING;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS year_levels JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS sections JSONB NOT NULL DEFAULT '[]'::jsonb;
 
+-- Repair a sections column that drifted to plain TEXT (ADD COLUMN IF NOT EXISTS
+-- above is a no-op when the legacy column already exists). Converts stored
+-- values: 'A' -> ["A"], '["A","B"]' -> ["A","B"], ''/NULL -> [].
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'users' AND column_name = 'sections'
+      AND data_type <> 'jsonb'
+  ) THEN
+    EXECUTE $repair$
+      ALTER TABLE users
+        ALTER COLUMN sections DROP DEFAULT,
+        ALTER COLUMN sections DROP NOT NULL,
+        ALTER COLUMN sections TYPE JSONB USING (
+          CASE
+            WHEN sections IS NULL OR btrim(sections::text) IN ('', '[]') THEN '[]'::jsonb
+            WHEN sections::text ~ '^\s*\[' THEN sections::text::jsonb
+            ELSE jsonb_build_array(btrim(sections::text))
+          END
+        )
+    $repair$;
+    EXECUTE 'ALTER TABLE users ALTER COLUMN sections SET DEFAULT ''[]''::jsonb';
+    EXECUTE 'ALTER TABLE users ALTER COLUMN sections SET NOT NULL';
+  END IF;
+END
+$$;
+
 -- ── 6. Convert the roster from high school to college ────────────────────────
 -- Grade 7-10 become 1st-4th Year; Grade 11/12 also land in 4th Year.
 UPDATE students

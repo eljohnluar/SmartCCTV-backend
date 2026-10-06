@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS students (
 
 ALTER TABLE students ADD COLUMN IF NOT EXISTS face_storage_path TEXT;
 ALTER TABLE students ADD COLUMN IF NOT EXISTS gesture_enrolled BOOLEAN DEFAULT FALSE;
+ALTER TABLE students ADD COLUMN IF NOT EXISTS teacher_id BIGINT;
 
 -- Private bucket for cropped enrollment face images. The backend service key uploads to it.
 INSERT INTO storage.buckets (id, name, public)
@@ -103,6 +104,19 @@ CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 
 -- Enable Supabase Realtime for attendance, alerts, and users
-ALTER PUBLICATION supabase_realtime ADD TABLE attendance;
-ALTER PUBLICATION supabase_realtime ADD TABLE alerts;
+-- (guarded so re-running the script does not fail with 42710 "already member of publication")
+DO $$
+DECLARE
+  t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['attendance', 'alerts'] LOOP
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_publication_tables
+      WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = t
+    ) THEN
+      EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE %I', t);
+    END IF;
+  END LOOP;
+END
+$$;
 

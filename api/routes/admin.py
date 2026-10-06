@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Annotated, List, Optional
+from typing import Annotated, List, Optional, Union
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from api.middleware.auth import require_admin, require_password_confirmation, verify_account_password
 from database.queries import (
     DatabaseUnavailableError,
+    clear_audit_log,
     create_account_record,
     delete_account_record,
     get_alerts_list,
@@ -28,7 +29,7 @@ from utils.demo_accounts import (
     update_fallback,
 )
 from utils.logger import logger
-from utils.sections import normalise_letters, normalise_years
+from utils.sections import normalise_letters, normalise_sections, normalise_years
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -42,7 +43,7 @@ class TeacherCreateRequest(BaseModel):
     email: Optional[str] = None
     role: str = Field(default="teacher", description="teacher or admin")
     year_levels: Optional[List[str]] = Field(default_factory=list, description="Year levels handled, e.g. '1st Year'")
-    sections: Optional[List[str]] = Field(default_factory=list, description="Section letters handled, e.g. 'A'")
+    sections: Optional[Union[str, List[str]]] = Field(default=None, description="Section(s) handled, e.g. 'A' or 'A, B'")
 
 
 class TeacherUpdateRequest(BaseModel):
@@ -52,7 +53,7 @@ class TeacherUpdateRequest(BaseModel):
     is_active: Optional[bool] = None
     role: Optional[str] = None
     year_levels: Optional[List[str]] = None
-    sections: Optional[List[str]] = None
+    sections: Optional[Union[str, List[str]]] = None
 
 
 def _accounts_available() -> bool:
@@ -93,7 +94,16 @@ def _assigned_years(values) -> List[str]:
 
 
 def _assigned_letters(values) -> List[str]:
-    return normalise_letters(values)
+    return normalise_sections(values)
+
+
+def _section_list(value: Union[str, List[str], None]) -> List[str]:
+    """Normalise a scalar string, comma-separated string, or list into a JSONB-safe list."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = value.split(",")
+    return _assigned_letters(value)
 
 
 @router.get("/summary")
@@ -155,7 +165,7 @@ def create_teacher(payload: TeacherCreateRequest, request: Request, claims: Admi
 
     role = _normalise_role(payload.role)
     year_levels = _assigned_years(payload.year_levels)
-    letters = _assigned_letters(payload.sections)
+    sections = _section_list(payload.sections)
     email = (payload.email or f"{username}@smartcctv.edu").strip().lower()
     record = {
         "username": username,
@@ -166,7 +176,7 @@ def create_teacher(payload: TeacherCreateRequest, request: Request, claims: Admi
         "registration_code": settings.ADMIN_REGISTRATION_CODE if role == "admin" else settings.TEACHER_PROVISIONING_CODE,
         "is_active": True,
         "year_levels": year_levels,
-        "sections": letters,
+        "sections": sections,
     }
 
     account = None
@@ -221,7 +231,7 @@ def update_teacher(
     if "year_levels" in updates:
         updates["year_levels"] = _assigned_years(updates["year_levels"])
     if "sections" in updates:
-        updates["sections"] = _assigned_letters(updates["sections"])
+        updates["sections"] = _section_list(updates["sections"])
     if "password" in updates:
         updates["password_hash"] = hash_password(updates.pop("password"))
 
@@ -338,3 +348,45 @@ def audit_log(
 
     actions = sorted({event.get("action") for event in events if event.get("action")})
     return {"events": events, "actions": actions, "count": len(events)}
+
+
+@router.delete("/audit-log")
+def reset_audit_log(
+    request: Request,
+    claims: AdminClaims,
+    _: dict = Depends(require_password_confirmation),
+):
+    """Erase the audit trail, gated on the administrator's own password.
+
+    The wipe is itself recorded afterwards, so a cleared log is never a silent
+    gap in the history.
+    """
+    if not _accounts_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Audit history needs Supabase. Configure SUPABASE_URL and SUPABASE_SERVICE_KEY, then run the audit schema.",
+        )
+
+    try:
+        deleted = clear_audit_log()
+    except DatabaseUnavailableError as error:
+        raise HTTPException(
+            status_code=503,
+            detail="The audit_log table is missing. Run backend/database/admin_schema.sql in the Supabase SQL Editor.",
+        ) from error
+
+    record_audit(
+        "audit_log_reset",
+        f"Administrator '{claims.get('sub')}' cleared {deleted} audit log event(s).",
+        actor=claims,
+        target="audit_log",
+        request=request,
+        severity="critical",
+    )
+    logger.warning("Audit log cleared by '%s' (%s events removed)", claims.get("sub"), deleted)
+
+    return {
+        "success": True,
+        "deleted_count": deleted,
+        "message": f"Audit log reset. {deleted} event(s) were deleted.",
+    }

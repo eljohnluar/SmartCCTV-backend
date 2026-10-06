@@ -32,10 +32,30 @@ def normalise_letters(values: Optional[List[str]]) -> List[str]:
     return cleaned
 
 
+def normalise_sections(values: Optional[List[str]]) -> List[str]:
+    """Accept any non-empty string as a section value.
+
+    Unlike ``normalise_letters`` this does **not** restrict to the predefined
+    A-E letters, so admins can store whatever section label they type in the UI
+    (e.g. ``"A"``, ``"1st Year - Section A"``, ``"Block 1"``).
+    Duplicates and blank entries are removed.
+    """
+    seen: List[str] = []
+    for value in values or []:
+        cleaned = str(value).strip()
+        if cleaned and cleaned not in seen:
+            seen.append(cleaned)
+    return seen
+
+
 def expand_sections(year_levels: Optional[List[str]], letters: Optional[List[str]]) -> List[str]:
-    """Cartesian product of the year levels and section letters a teacher handles."""
+    """Cartesian product of the year levels and section names a teacher handles.
+
+    Section names are free text (``A`` or ``12345``), matching whatever the
+    administrator stored in Teacher Management.
+    """
     years = normalise_years(year_levels)
-    cleaned = normalise_letters(letters)
+    cleaned = normalise_sections(letters)
     if not years or not cleaned:
         return []
     return [section_label(year, letter) for year in years for letter in cleaned]

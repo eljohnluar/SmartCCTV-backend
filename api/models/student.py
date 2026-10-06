@@ -8,6 +8,7 @@ class StudentBase(BaseModel):
     section: Optional[str] = Field(None, description="Classroom section", example="Section A")
     grade_level: Optional[str] = Field(None, description="Grade level", example="Grade 10")
     photo_url: Optional[str] = Field(None, description="Avatar photo URL")
+    teacher_id: Optional[int] = Field(None, description="users.id of the teacher assigned to this student")
 
 class StudentCreate(StudentBase):
     pass
@@ -18,6 +19,7 @@ class StudentUpdate(BaseModel):
     section: Optional[str] = None
     grade_level: Optional[str] = None
     photo_url: Optional[str] = None
+    teacher_id: Optional[int] = None
 
 class StudentResponse(StudentBase):
     id: int

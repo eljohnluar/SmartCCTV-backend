@@ -443,3 +443,18 @@ def list_audit_events(
         raise
     except Exception as error:
         raise _database_error("audit log query", error) from error
+
+
+def clear_audit_log() -> int:
+    """Delete every stored audit event and return how many went.
+
+    PostgREST refuses an unfiltered delete, hence the ``id > 0`` match-all;
+    ``id`` is a BIGSERIAL so no row can satisfy ``id <= 0``.
+    """
+    try:
+        result = _client().table("audit_log").delete().gt("id", 0).execute()
+        return len(result.data or [])
+    except DatabaseUnavailableError:
+        raise
+    except Exception as error:
+        raise _database_error("audit log clear", error) from error

@@ -83,7 +83,7 @@ class LiveFaceMatcher:
     def match_frame(
         self,
         frame: np.ndarray,
-        boxes: List[FaceBox],
+        boxes: List[Any],
         record_attendance: bool = True,
         hand_gesture_detected: bool = False,
     ) -> List[str]:
@@ -95,7 +95,7 @@ class LiveFaceMatcher:
     def _match_frame(
         self,
         frame: np.ndarray,
-        boxes: List[FaceBox],
+        boxes: List[Any],
         record_attendance: bool = True,
         hand_gesture_detected: bool = False,
     ) -> List[str]:
@@ -119,9 +119,19 @@ class LiveFaceMatcher:
         matched_face_boxes: Dict[int, FaceBox] = {}
         matched_gesture_requirements: Dict[int, bool] = {}
 
-        for box in boxes:
-            crop = self._crop(frame, box)
-            embedding = face_recognizer.extract_embedding(crop) if crop is not None else None
+        for item in boxes:
+            if isinstance(item, dict):
+                box = item["box"]
+                raw_face = item.get("raw_face")
+            else:
+                box = item[:4]
+                raw_face = None
+
+            if raw_face is not None:
+                embedding = face_recognizer.extract_embedding_from_frame(frame, raw_face)
+            else:
+                crop = self._crop(frame, box)
+                embedding = face_recognizer.extract_embedding(crop) if crop is not None else None
 
             if not enrolled:
                 # No enrolled faces in the system
@@ -137,7 +147,7 @@ class LiveFaceMatcher:
                 continue
 
             student_id = int(match["student_id"])
-            student = next((item for item in enrolled if item.get("student_id") == student_id), {})
+            student = next((s for s in enrolled if s.get("student_id") == student_id), {})
             name = student.get("student_name") or "MATCH"
             confidence = float(match.get("confidence", 0.0))
             requires_gesture = bool(student.get("gesture_enrolled", False))
@@ -168,8 +178,12 @@ class LiveFaceMatcher:
             self._confirmations[student_id] += 1
             if self._confirmations[student_id] >= 2:
                 self._check_uniform_policy(student_id, enrolled, frame, matched_face_boxes.get(student_id))
-            # Require 2 consecutive detections before marking to reduce false positives
-            if self._confirmations[student_id] < 2:
+            # Require 3 consecutive high-confidence detections before marking attendance
+            if self._confirmations[student_id] < 3:
+                continue
+            # Ensure confidence meets the high threshold required for permanent attendance writes
+            min_attendance_confidence = max(face_recognizer.threshold, 0.58)
+            if matched_confidences.get(student_id, 0.0) < min_attendance_confidence:
                 continue
             if matched_gesture_requirements.get(student_id, False) and not hand_gesture_detected:
                 continue

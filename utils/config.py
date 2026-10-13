@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     THREAT_SCAN_INTERVAL: float = Field(default=1.0, env="THREAT_SCAN_INTERVAL")
 
     # AI & Face Recognition
-    RECOGNITION_THRESHOLD: float = Field(default=0.45, env="RECOGNITION_THRESHOLD")
+    RECOGNITION_THRESHOLD: float = Field(default=0.55, env="RECOGNITION_THRESHOLD")
     RECOGNITION_MODEL: str = Field(default="Facenet", env="RECOGNITION_MODEL")
     FACE_RECOGNITION_MODEL_PATH: str = Field(
         default="ai_engine/models/face_recognition_sface_2021dec.onnx",

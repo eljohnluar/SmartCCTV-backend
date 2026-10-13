@@ -142,19 +142,20 @@ class FrameAnalyzer:
 
             if due_face:
                 last_detection_time = now
-                detected_faces = face_detector.detect_faces(frame)
+                detected_detailed = face_detector.detect_faces_detailed(frame)
+                detected_boxes = [item["box"] for item in detected_detailed]
                 hand = self._state["hand"]
-                if detected_faces and (now - last_match_time >= MATCH_INTERVAL or len(detected_faces) != len(face_labels)):
+                if detected_detailed and (now - last_match_time >= MATCH_INTERVAL or len(detected_detailed) != len(face_labels)):
                     face_labels = live_face_matcher.match_frame(
                         frame,
-                        detected_faces,
+                        detected_detailed,
                         camera_stream.attendance_recording,
                         hand["open_palm"],
                     )
                     last_match_time = now
-                elif not detected_faces:
+                elif not detected_detailed:
                     face_labels = []
-                self._publish(faces=detected_faces, labels=face_labels)
+                self._publish(faces=detected_boxes, labels=face_labels)
 
         logger.info("Frame analyzer stopped.")
 

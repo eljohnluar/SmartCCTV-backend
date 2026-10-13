@@ -133,49 +133,54 @@ async def enroll_face(
                     detail=f"Show an open palm with your face before capturing the {angle} enrollment photo.",
                 )
 
-            faces = face_detector.detect_faces(frame)
-            if not faces:
-                # Profile captures are harder for the detector than the front
-                # view. Retry with relaxed thresholds before giving up.
-                faces = face_detector.detect_faces(
+            faces_detailed = face_detector.detect_faces_detailed(frame, min_confidence=0.45)
+            if not faces_detailed:
+                # Profile captures are slightly harder; retry with relaxed confidence
+                faces_detailed = face_detector.detect_faces_detailed(
                     frame,
-                    min_confidence=0.5,
-                    min_neighbors=4,
-                    min_size=20,
+                    min_confidence=0.35,
+                    min_size=28,
                     detection_width=960,
                 )
-            if not faces and last_box:
-                # The student is sitting in the same spot across the four
-                # angles, so a trace from an earlier capture is still a valid
-                # place to crop from.
-                faces = [last_box]
-                logger.warning("Enrollment '%s' capture reused the previous face box (no fresh detection).", angle)
-            if not faces and last_box is None:
-                # First capture with nothing detected: crop the center, where
-                # the capture UI instructs the student to look. A traced face
-                # on any later angle will take over from here.
-                frame_height, frame_width = frame.shape[:2]
-                box_width = round(frame_width * 0.45)
-                box_height = round(frame_height * 0.6)
-                faces = [(
-                    max(0, (frame_width - box_width) // 2),
-                    max(0, (frame_height - box_height) // 3),
-                    box_width,
-                    box_height,
-                )]
-                logger.warning(
-                    "Enrollment '%s' capture had no detectable face; cropping the center as a fallback.",
-                    angle,
+
+            if not faces_detailed:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"No clear face detected in the {angle} capture. Please ensure good lighting, look towards the camera, and retake.",
                 )
 
-            x, y, width, height = max(faces, key=lambda box: box[2] * box[3])
+            best_item = max(faces_detailed, key=lambda item: item["box"][2] * item["box"][3])
+            x, y, width, height = best_item["box"]
             x = max(0, x)
             y = max(0, y)
             width = min(frame.shape[1] - x, width)
             height = min(frame.shape[0] - y, height)
-            if width <= 0 or height <= 0:
-                raise HTTPException(status_code=422, detail=f"No face was detected in the {angle} capture. Retake it in good lighting.")
-            last_box = (x, y, width, height)
+            if width < 48 or height < 48:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"The face in the {angle} capture is too small or far away. Please move closer and retake.",
+                )
+
+            raw_face = best_item.get("raw_face")
+            if raw_face is not None:
+                embedding = face_recognizer.extract_embedding_from_frame(frame, raw_face)
+            else:
+                padding_x = round(width * 0.2)
+                padding_y = round(height * 0.25)
+                left = max(0, x - padding_x)
+                top = max(0, y - padding_y)
+                right = min(frame.shape[1], x + width + padding_x)
+                bottom = min(frame.shape[0], y + height + padding_y)
+                face_crop = frame[top:bottom, left:right]
+                embedding = face_recognizer.extract_embedding(face_crop)
+
+            if not embedding:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Face embedding is unavailable. Ensure the OpenCV SFace model is present and restart the API.",
+                )
+            if len(embedding) != 128:
+                raise HTTPException(status_code=422, detail=f"The recognition model returned an unsupported embedding for the {angle} capture.")
 
             padding_x = round(width * 0.2)
             padding_y = round(height * 0.25)
@@ -184,14 +189,6 @@ async def enroll_face(
             right = min(frame.shape[1], x + width + padding_x)
             bottom = min(frame.shape[0], y + height + padding_y)
             face_crop = frame[top:bottom, left:right]
-            embedding = face_recognizer.extract_embedding(face_crop)
-            if not embedding:
-                raise HTTPException(
-                    status_code=503,
-                    detail="Face embedding is unavailable. Ensure the OpenCV SFace model is present and restart the API.",
-                )
-            if len(embedding) != 128:
-                raise HTTPException(status_code=422, detail=f"The recognition model returned an unsupported embedding for the {angle} capture.")
 
             encoded_success, encoded_face = cv2.imencode(".jpg", face_crop, [cv2.IMWRITE_JPEG_QUALITY, 92])
             if not encoded_success:

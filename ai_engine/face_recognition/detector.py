@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any, Optional
 import numpy as np
 from utils.config import settings
 from utils.logger import logger
@@ -77,20 +77,25 @@ class FaceDetector:
                 selected.append(box)
         return selected
 
-    def detect_faces(
+    def _merge_overlaps_detailed(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Keep the strongest candidate when detections overlap significantly."""
+        selected: List[Dict[str, Any]] = []
+        for item in sorted(items, key=lambda c: c["box"][2] * c["box"][3], reverse=True):
+            if all(self._intersection_over_union(item["box"], kept["box"]) < 0.35 for kept in selected):
+                selected.append(item)
+        return selected
+
+    def detect_faces_detailed(
         self,
         frame: np.ndarray,
         min_confidence: float | None = None,
         min_neighbors: int | None = None,
         min_size: int | None = None,
         detection_width: int | None = None,
-    ) -> List[FaceBox]:
+    ) -> List[Dict[str, Any]]:
         """
-        Detects bounding boxes (x, y, w, h) of faces in the frame.
-
-        All tuning knobs are optional overrides; by default the configured
-        runtime settings are used. Enrollment passes more permissive values so
-        profile captures are not rejected outright.
+        Detects faces in the frame and returns detailed dictionaries containing
+        bounding boxes, full landmark arrays (scaled to original frame), and confidence.
         """
         if (self.yunet is None and not self.cascades) or frame is None or frame.size == 0:
             return []
@@ -120,18 +125,26 @@ class FaceDetector:
                 _, faces = self.yunet.detect(detection_frame)
                 if faces is not None:
                     inverse_scale = 1.0 / scale
-                    yunet_boxes = [
-                        (
-                            round(float(face[0]) * inverse_scale),
-                            round(float(face[1]) * inverse_scale),
-                            round(float(face[2]) * inverse_scale),
-                            round(float(face[3]) * inverse_scale),
+                    yunet_items: List[Dict[str, Any]] = []
+                    for face in faces:
+                        score = float(face[-1])
+                        if score < confidence:
+                            continue
+                        scaled_raw = np.array(face, dtype=np.float32)
+                        scaled_raw[:14] *= inverse_scale
+                        box = (
+                            round(float(scaled_raw[0])),
+                            round(float(scaled_raw[1])),
+                            round(float(scaled_raw[2])),
+                            round(float(scaled_raw[3])),
                         )
-                        for face in faces
-                        if float(face[-1]) >= confidence
-                    ]
-                    if yunet_boxes:
-                        return self._merge_overlaps(yunet_boxes)
+                        yunet_items.append({
+                            "box": box,
+                            "raw_face": scaled_raw,
+                            "confidence": score,
+                        })
+                    if yunet_items:
+                        return self._merge_overlaps_detailed(yunet_items)
 
             gray = cv2.cvtColor(detection_frame, cv2.COLOR_BGR2GRAY)
             gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
@@ -144,22 +157,46 @@ class FaceDetector:
                     minNeighbors=neighbors,
                     minSize=(min_size_px, min_size_px),
                 )
-                candidates.extend((int(x), int(y), int(w), int(h)) for x, y, w, h in faces)
+                candidates.extend((int(x), int(y), int(w), int(h)) for x, y, w, h in candidates)
 
             inverse_scale = 1.0 / scale
-            original_boxes = [
-                (
-                    round(x * inverse_scale),
-                    round(y * inverse_scale),
-                    round(w * inverse_scale),
-                    round(h * inverse_scale),
-                )
+            original_items: List[Dict[str, Any]] = [
+                {
+                    "box": (
+                        round(x * inverse_scale),
+                        round(y * inverse_scale),
+                        round(w * inverse_scale),
+                        round(h * inverse_scale),
+                    ),
+                    "raw_face": None,
+                    "confidence": 0.70,
+                }
                 for x, y, w, h in candidates
             ]
-            return self._merge_overlaps(original_boxes)
+            return self._merge_overlaps_detailed(original_items)
         except Exception as e:
             logger.error(f"Error in face detection: {e}")
             return []
+
+    def detect_faces(
+        self,
+        frame: np.ndarray,
+        min_confidence: float | None = None,
+        min_neighbors: int | None = None,
+        min_size: int | None = None,
+        detection_width: int | None = None,
+    ) -> List[FaceBox]:
+        """
+        Detects bounding boxes (x, y, w, h) of faces in the frame.
+        """
+        detailed = self.detect_faces_detailed(
+            frame,
+            min_confidence=min_confidence,
+            min_neighbors=min_neighbors,
+            min_size=min_size,
+            detection_width=detection_width,
+        )
+        return [item["box"] for item in detailed]
 
     def draw_face_boxes(self, frame: np.ndarray, faces: List[FaceBox], labels: List[str] | None = None) -> np.ndarray:
         """Return a copy of a BGR frame with clear, dashboard-ready face boxes."""
@@ -169,7 +206,8 @@ class FaceDetector:
         try:
             import cv2
             annotated = frame.copy()
-            for index, (x, y, width, height) in enumerate(faces):
+            for index, box in enumerate(faces):
+                x, y, width, height = box[:4]
                 x = max(0, x)
                 y = max(0, y)
                 right = min(annotated.shape[1] - 1, x + width)
